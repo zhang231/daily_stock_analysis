@@ -440,6 +440,7 @@ class DataFetcherManager:
         from .pytdx_fetcher import PytdxFetcher
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
+        from .futu_fetcher import FutuFetcher
         from src.config import get_config
 
         config = get_config()
@@ -451,6 +452,7 @@ class DataFetcherManager:
         pytdx = PytdxFetcher()      # 通达信数据源（可配 PYTDX_HOST/PYTDX_PORT）
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
+        futu = FutuFetcher()        # 富途牛牛数据源（需运行 OpenD 客户端）
 
         # 初始化数据源列表
         self._fetchers = [
@@ -460,6 +462,7 @@ class DataFetcherManager:
             pytdx,
             baostock,
             yfinance,
+            futu,
         ]
 
         # 按优先级排序（Tushare 如果配置了 Token 且初始化成功，优先级为 0）
