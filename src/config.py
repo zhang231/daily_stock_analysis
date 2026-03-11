@@ -190,6 +190,12 @@ class Config:
     # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
     single_stock_notify: bool = False
 
+    # === Obsidian 推送配置 ===
+    obsidian_enabled: bool = False
+    obsidian_vault_name: Optional[str] = None
+    obsidian_daily_note_path: str = "DailyNotes"
+    obsidian_cli_path: str = "obsidian"  # Obsidian CLI 路径
+
     # 报告类型：simple(精简) 或 full(完整)
     report_type: str = "simple"
 
@@ -625,6 +631,10 @@ class Config:
             discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
             astrbot_url=os.getenv('ASTRBOT_URL'),
             astrbot_token=os.getenv('ASTRBOT_TOKEN'),
+            obsidian_enabled=os.getenv('OBSIDIAN_ENABLED', 'false').lower() == 'true',
+            obsidian_vault_name=os.getenv('OBSIDIAN_VAULT_NAME'),
+            obsidian_daily_note_path=os.getenv('OBSIDIAN_DAILY_NOTE_PATH', 'DailyNotes'),
+            obsidian_cli_path=os.getenv('OBSIDIAN_CLI_PATH', 'obsidian'),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
             report_type=os.getenv('REPORT_TYPE', 'simple').lower(),
             report_summary_only=os.getenv('REPORT_SUMMARY_ONLY', 'false').lower() == 'true',
