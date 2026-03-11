@@ -23,7 +23,7 @@ from typing import Optional
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Keep this test runnable when optional LLM/runtime deps are not installed.
-for optional_module in ("litellm", "json_repair"):
+for optional_module in ("litellm", "json_repair", "tenacity", "markdown2", "pypinyin", "lark"):
     try:
         __import__(optional_module)
     except ModuleNotFoundError:
@@ -247,6 +247,31 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("subprocess.run")
+    def test_send_to_obsidian_via_notification_service(self, mock_run: mock.MagicMock, mock_get_config: mock.MagicMock):
+        cfg = _make_config(obsidian_enabled=True, obsidian_vault_name="TestVault")
+        mock_get_config.return_value = cfg
+        # 所有 subprocess.run 调用都返回成功
+        mock_run.return_value = mock.MagicMock(returncode=0)
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.OBSIDIAN, service.get_available_channels())
+
+        ok = service.send("obsidian content")
+
+        self.assertTrue(ok)
+        # 验证至少调用了 create 命令（在多次调用中）
+        found_create = False
+        for call in mock_run.call_args_list:
+            args = call[0][0] if call[0] else []
+            if len(args) >= 2 and args[1] == "create":
+                found_create = True
+                self.assertEqual(args[0], "obsidian")
+                self.assertEqual(args[2], "vault=TestVault")
+                break
+        self.assertTrue(found_create, "Expected obsidian create command not found")
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")

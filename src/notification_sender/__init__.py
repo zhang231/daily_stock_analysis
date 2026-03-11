@@ -16,4 +16,5 @@ from .pushover_sender import PushoverSender
 from .pushplus_sender import PushplusSender
 from .serverchan3_sender import Serverchan3Sender
 from .telegram_sender import TelegramSender
+from .obsidian_sender import ObsidianSender
 from .wechat_sender import WechatSender, WECHAT_IMAGE_MAX_BYTES

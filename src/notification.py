@@ -15,6 +15,7 @@ A股自选股智能分析系统 - 通知层
    - Pushover（手机/桌面推送）
 """
 import logging
+import subprocess
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from enum import Enum
@@ -34,6 +35,7 @@ from src.notification_sender import (
     Serverchan3Sender,
     TelegramSender,
     WechatSender,
+    ObsidianSender,
     WECHAT_IMAGE_MAX_BYTES
 )
 
@@ -51,6 +53,7 @@ class NotificationChannel(Enum):
     SERVERCHAN3 = "serverchan3"  # Server酱3（手机APP推送服务）
     CUSTOM = "custom"      # 自定义 Webhook
     DISCORD = "discord"    # Discord 机器人 (Bot)
+    OBSIDIAN = "obsidian"  # Obsidian
     ASTRBOT = "astrbot"
     UNKNOWN = "unknown"    # 未知
 
@@ -75,6 +78,7 @@ class ChannelDetector:
             NotificationChannel.SERVERCHAN3: "Server酱3",
             NotificationChannel.CUSTOM: "自定义Webhook",
             NotificationChannel.DISCORD: "Discord机器人",
+            NotificationChannel.OBSIDIAN: "Obsidian",
             NotificationChannel.ASTRBOT: "ASTRBOT机器人",
             NotificationChannel.UNKNOWN: "未知渠道",
         }
@@ -91,7 +95,8 @@ class NotificationService(
     PushplusSender,
     Serverchan3Sender,
     TelegramSender,
-    WechatSender
+    WechatSender,
+    ObsidianSender
 ):
     """
     通知服务
@@ -107,6 +112,7 @@ class NotificationService(
     - Telegram Bot
     - 邮件 SMTP
     - Pushover（手机/桌面推送）
+    - Obsidian（通过 obsidian-cli）
     
     注意：所有已配置的渠道都会收到推送
     """
@@ -143,6 +149,7 @@ class NotificationService(
         Serverchan3Sender.__init__(self, config)
         TelegramSender.__init__(self, config)
         WechatSender.__init__(self, config)
+        ObsidianSender.__init__(self, config)
         
         # 检测所有已配置的渠道
         self._available_channels = self._detect_all_channels()
@@ -208,6 +215,16 @@ class NotificationService(
         # Discord
         if self._is_discord_configured():
             channels.append(NotificationChannel.DISCORD)
+
+        # Obsidian
+        logger.debug(f"Obsidian check: _obsidian_enabled={getattr(self, '_obsidian_enabled', 'NOT_SET')}, "
+                     f"_vault_name={getattr(self, '_vault_name', 'NOT_SET')}")
+        if self._is_obsidian_configured():
+            channels.append(NotificationChannel.OBSIDIAN)
+            logger.info("Obsidian channel enabled")
+        else:
+            logger.debug("Obsidian channel not configured")
+
         # AstrBot
         if self._is_astrbot_configured():
             channels.append(NotificationChannel.ASTRBOT)
@@ -1468,8 +1485,10 @@ class NotificationService(
                         )
                     else:
                         result = self.send_to_custom(content)
-                elif channel == NotificationChannel.DISCORD:
-                    result = self.send_to_discord(content)
+                elif channel == NotificationChannel.OBSIDIAN:
+                    # Obsidian 的标题使用报告日期
+                    report_date = datetime.now().strftime('%Y-%m-%d')
+                    result = self.send_obsidian(f"{report_date}_股票分析报告", content)
                 elif channel == NotificationChannel.ASTRBOT:
                     result = self.send_to_astrbot(content)
                 else:
