@@ -16,6 +16,7 @@ FutuFetcher - 富途牛牛数据源 (Priority 5)
 
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -37,87 +38,177 @@ logger = logging.getLogger(__name__)
 class FutuFetcher(BaseFetcher):
     """
     Futu OpenD 数据源实现
-    
+
     优先级：5（补充数据源）
     数据来源：Futu OpenD（富途开放平台）
-    
+
     支持市场：港股（HK）、A 股（SH/SZ）
-    
+
     注意：不支持美股（需购买美股行情权限，请使用 YfinanceFetcher）
     使用前请确保 Futu OpenD 已运行且已登录
+
+    设计说明：
+    - 使用类级别共享连接（_shared_api），避免重复初始化 OpenD
+    - 实例级别只保存配置，实际 API 调用都通过类方法访问共享连接
     """
-    
+
     name = "FutuFetcher"
     priority = int(os.getenv("FUTA_PRIORITY", "5"))
-    
+
+    # 类级别共享连接
+    _shared_api: Optional[Any] = None
+    _shared_api_host: Optional[str] = None
+    _shared_api_port: Optional[int] = None
+    _shared_market_subscribed: set = set()
+    _init_lock = False
+
     def __init__(self):
-        """初始化 FutuFetcher"""
+        """初始化 FutuFetcher（使用共享连接）"""
         self._host = os.getenv("FUTA_OPEND_HOST", "127.0.0.1")
         self._port = int(os.getenv("FUTA_OPEND_PORT", "11111"))
-        self._api: Optional[Any] = None
-        self._market_subscribed = set()
-        
-        # 尝试初始化 API
-        self._init_api()
-    
-    def _init_api(self) -> bool:
-        """初始化 Futu API"""
+        # 速率限制：每 1 秒最多 1 次请求（满足 30 秒 60 次的限频，更加保守）
+        self._min_request_interval = 1.0  # 秒
+        self._last_request_time = 0.0
+
+        # 确保共享连接已初始化
+        FutuFetcher._ensure_shared_api(self._host, self._port)
+
+    @classmethod
+    def _ensure_shared_api(cls, host: str, port: int) -> bool:
+        """确保类级别共享 API 已初始化（带简单的并发保护）"""
+        # 如果连接已存在且配置匹配，直接复用
+        if cls._shared_api is not None:
+            if cls._shared_api_host == host and cls._shared_api_port == port:
+                return True
+            else:
+                # 配置变化，关闭旧连接
+                logger.info(f"Futu OpenD 配置变化 ({cls._shared_api_host}:{cls._shared_api_port} -> {host}:{port})，重新连接")
+                cls._close_shared_api()
+
+        # 检查是否正在初始化（简单的锁机制）
+        if cls._init_lock:
+            # 等待初始化完成
+            import time
+            wait_count = 0
+            while cls._init_lock and wait_count < 50:  # 最多等 5 秒
+                time.sleep(0.1)
+                wait_count += 1
+            # 等待结束后检查是否初始化成功
+            return cls._shared_api is not None
+
+        # 开始初始化
+        cls._init_lock = True
+        try:
+            cls._init_shared_api(host, port)
+        finally:
+            cls._init_lock = False
+
+        return cls._shared_api is not None
+
+    @classmethod
+    def _init_shared_api(cls, host: str, port: int) -> bool:
+        """初始化共享 Futu API"""
         try:
             from futu import OpenQuoteContext
-            
-            self._api = OpenQuoteContext(host=self._host, port=self._port)
+
+            cls._shared_api = OpenQuoteContext(host=host, port=port)
             # 开启异步接收
-            self._api.start()
-            
+            cls._shared_api.start()
+
             # 检查连接状态
-            ret, state = self._api.get_global_state()
+            ret, state = cls._shared_api.get_global_state()
             if ret == 0:
-                logger.info(f"Futu OpenD 连接成功 ({self._host}:{self._port})")
+                cls._shared_api_host = host
+                cls._shared_api_port = port
+                logger.info(f"Futu OpenD 共享连接建立成功 ({host}:{port})")
                 return True
             else:
                 logger.error(f"Futu OpenD 状态异常: {state}")
-                self._api.close()
-                self._api = None
+                cls._close_shared_api()
                 return False
-            
+
         except ImportError:
             logger.warning("Futu API 未安装，请运行：pip install futu-api")
-            self._api = None
+            cls._shared_api = None
             return False
         except Exception as e:
             logger.error(f"Futu OpenD 初始化失败：{e}")
-            self._api = None
+            cls._shared_api = None
             return False
 
-    def close(self):
-        """显式关闭连接"""
-        if self._api:
+    @classmethod
+    def _close_shared_api(cls):
+        """关闭共享连接"""
+        if cls._shared_api:
             try:
-                self._api.close()
-                logger.info("Futu OpenD 连接已关闭")
+                cls._shared_api.close()
+                logger.info("Futu OpenD 共享连接已关闭")
             except Exception as e:
                 logger.error(f"关闭 Futu OpenD 连接失败: {e}")
             finally:
-                self._api = None
+                cls._shared_api = None
+                cls._shared_api_host = None
+                cls._shared_api_port = None
+                cls._shared_market_subscribed.clear()
 
-    def __del__(self):
-        """对象销毁时尝试关闭连接"""
-        self.close()
-    
+    @property
+    def _api(self):
+        """访问共享 API 的兼容属性"""
+        return FutuFetcher._shared_api
+
+    @classmethod
+    def _check_connection(cls) -> bool:
+        """检查共享连接是否仍然有效"""
+        if cls._shared_api is None:
+            return False
+        try:
+            ret, _ = cls._shared_api.get_global_state()
+            return ret == 0
+        except Exception:
+            return False
+
+    @classmethod
+    def _reconnect_if_needed(cls, host: str, port: int) -> bool:
+        """如果需要，重新建立连接"""
+        if cls._check_connection():
+            return True
+
+        logger.warning("Futu OpenD 连接已断开，尝试重新连接...")
+        cls._close_shared_api()
+        return cls._ensure_shared_api(host, port)
+
+    def _ensure_connection(self) -> bool:
+        """实例方法：确保连接可用（自动重连）"""
+        return FutuFetcher._reconnect_if_needed(self._host, self._port)
+        """访问共享订阅状态的兼容属性"""
+        return FutuFetcher._shared_market_subscribed
+
+    def _rate_limit(self):
+        """速率限制：确保两次请求之间至少间隔 0.5 秒"""
+        current_time = time.time()
+        elapsed = current_time - self._last_request_time
+        if elapsed < self._min_request_interval:
+            sleep_time = self._min_request_interval - elapsed
+            time.sleep(sleep_time)
+        self._last_request_time = time.time()
+
     def is_available(self) -> bool:
         """检查 Futu 数据源是否可用"""
-        return self._api is not None
+        return FutuFetcher._shared_api is not None
     
     def _subscribe_market(self, codes: List[str], subtypes: List[Any] = None) -> bool:
         """订阅股票行情"""
         if not self._api or not codes:
             return False
-        
+
         if subtypes is None:
             from futu import SubType
             subtypes = [SubType.QUOTE, SubType.K_DAY]
-        
+
         try:
+            # 速率限制
+            self._rate_limit()
+
             # 富途 API 的订阅接口使用 code_list 而不是 codes，且不支持 force_refresh 参数
             ret, data = self._api.subscribe(
                 code_list=codes,
@@ -197,9 +288,10 @@ class FutuFetcher(BaseFetcher):
     )
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """从 Futu 获取原始历史数据 (使用 request_history_kline 接口)"""
-        if self._api is None:
-            raise DataFetchError("Futu API 未初始化，请检查 OpenD 连接")
-        
+        # 确保连接可用（自动重连）
+        if not self._ensure_connection():
+            raise DataFetchError("Futu API 连接失败，请检查 OpenD 是否运行")
+
         from futu import KLType, AuType, RET_OK
         
         futu_code = self._convert_stock_code(stock_code)
@@ -210,6 +302,9 @@ class FutuFetcher(BaseFetcher):
         logger.info(f"[Futu] 获取历史 K 线: {futu_code} ({start_date} ~ {end_date})")
         
         try:
+            # 速率限制
+            self._rate_limit()
+
             # 使用更准确的接口 request_history_kline (拉取更多历史)
             ret, data, page_req_key = self._api.request_history_kline(
                 code=futu_code,
@@ -219,17 +314,20 @@ class FutuFetcher(BaseFetcher):
                 autype=AuType.QFQ,  # 前复权
                 max_count=1000
             )
-            
+
             if ret != RET_OK:
                 # 检查是否是额度问题或其他
                 raise DataFetchError(f"Futu API 返回错误 ({ret}): {data}")
-            
+
             if data is None or data.empty:
                 raise DataFetchError(f"Futu 未返回 {stock_code} 的数据")
-            
+
             # 如果有分页，简单的循环处理 (通常 1000 条足够日线)
             all_data = [data]
             while page_req_key is not None:
+                # 速率限制：分页请求也需要限流
+                self._rate_limit()
+
                 ret, data, page_req_key = self._api.request_history_kline(
                     code=futu_code,
                     start=start_date,
@@ -286,19 +384,23 @@ class FutuFetcher(BaseFetcher):
     
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """获取实时行情数据"""
-        if self._api is None:
-            logger.debug(f"[Futu] API 未初始化，跳过 {stock_code}")
+        # 确保连接可用（自动重连）
+        if not self._ensure_connection():
+            logger.debug(f"[Futu] API 连接失败，跳过 {stock_code}")
             return None
-        
+
         from futu import RET_OK
         
         try:
             futu_code = self._convert_stock_code(stock_code)
-            
+
             # 实时行情需要先订阅
             from futu import SubType
             self._subscribe_market([futu_code], [SubType.QUOTE])
-            
+
+            # 速率限制
+            self._rate_limit()
+
             ret, data = self._api.get_stock_quote(code_list=[futu_code])
             
             if ret != RET_OK:
@@ -360,9 +462,10 @@ class FutuFetcher(BaseFetcher):
     
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
         """获取主要指数实时行情"""
-        if self._api is None:
+        # 确保连接可用（自动重连）
+        if not self._ensure_connection():
             return None
-        
+
         from futu import RET_OK
         
         # 指数映射
@@ -388,7 +491,10 @@ class FutuFetcher(BaseFetcher):
             # 订阅指数行情
             from futu import SubType
             self._subscribe_market(index_codes, [SubType.QUOTE])
-            
+
+            # 速率限制
+            self._rate_limit()
+
             ret, data = self._api.get_stock_quote(code_list=index_codes)
             
             if ret != RET_OK or data is None or data.empty:
@@ -426,25 +532,32 @@ class FutuFetcher(BaseFetcher):
     
     def get_stock_name(self, stock_code: str) -> Optional[str]:
         """获取股票名称"""
-        if self._api is None:
+        # 确保连接可用（自动重连）
+        if not self._ensure_connection():
             return None
-        
+
         from futu import RET_OK
         
         try:
             futu_code = self._convert_stock_code(stock_code)
-            
+
             # 使用 get_stock_basicinfo 获取股票名称
             # 港股
             if futu_code.startswith('HK'):
                 from futu import Market
+                # 速率限制
+                self._rate_limit()
                 ret, data = self._api.get_stock_basicinfo(market=Market.HK, code_list=[futu_code])
             # A 股
             elif futu_code.startswith('SH'):
                 from futu import Market
+                # 速率限制
+                self._rate_limit()
                 ret, data = self._api.get_stock_basicinfo(market=Market.SH, code_list=[futu_code])
             elif futu_code.startswith('SZ'):
                 from futu import Market
+                # 速率限制
+                self._rate_limit()
                 ret, data = self._api.get_stock_basicinfo(market=Market.SZ, code_list=[futu_code])
             else:
                 return None
