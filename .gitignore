@@ -53,6 +53,8 @@ reports/
 *.db
 *.sqlite
 *.sqlite3
+main.log
+error.log
 
 # 系统文件
 .DS_Store
