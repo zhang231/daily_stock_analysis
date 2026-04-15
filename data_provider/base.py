@@ -848,6 +848,7 @@ class DataFetcherManager:
         优先级动态调整逻辑：
         - 如果配置了 TUSHARE_TOKEN：Tushare 优先级提升为 0（最高）
         - 否则按默认优先级：
+          0. FutuFetcher (Priority 0) - 富途牛牛（需运行 OpenD 客户端，最高优先级）
           0. EfinanceFetcher (Priority 0) - 最高优先级
           1. AkshareFetcher (Priority 1)
           2. PytdxFetcher (Priority 2) - 通达信
@@ -863,6 +864,7 @@ class DataFetcherManager:
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
         from .longbridge_fetcher import LongbridgeFetcher
+        from .futu_fetcher import FutuFetcher
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
         akshare = AkshareFetcher()
@@ -871,6 +873,7 @@ class DataFetcherManager:
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
         longbridge = LongbridgeFetcher()  # 长桥（美股/港股兜底，懒加载）
+        futu = FutuFetcher()        # 富途牛牛数据源（需运行 OpenD 客户端）
 
         # 初始化数据源列表
         self._ensure_concurrency_guards()
@@ -883,6 +886,7 @@ class DataFetcherManager:
                 baostock,
                 yfinance,
                 longbridge,
+                futu,
             ]
 
             # 按优先级排序（Tushare 如果配置了 Token 且初始化成功，优先级为 0）
